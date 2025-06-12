@@ -11,58 +11,71 @@ import java.util.regex.Pattern;
 public class ExcelPDFProcessor {
     public static void main(String[] args) {
         try {
-            // Define the Excel file path (input and output are the same)
+            // Define the Excel file path
             String filePath = "input.xlsx";
             File excelFile = new File(filePath);
+            System.out.println("Processing Excel file: " + excelFile.getAbsolutePath());
 
             // Load Excel file
             FileInputStream fis = new FileInputStream(excelFile);
             Workbook workbook = new XSSFWorkbook(fis);
             Sheet sheet = workbook.getSheetAt(0);
+            System.out.println("Total rows to process: " + (sheet.getLastRowNum() + 1));
 
-            // Pattern to extract PF_XXXXX_YYYY from complex string
+            // Pattern to extract PF_XXXXX_YYYY
             Pattern pattern = Pattern.compile("PF_(\\d{5})_(\\d{4})");
 
             // Iterate through all rows starting from row 2 (index 1)
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                System.out.println("Processing row: " + (i + 1));
                 Row row = sheet.getRow(i);
                 if (row == null) {
-                    row = sheet.createRow(i); // Create row if it doesn't exist
+                    row = sheet.createRow(i);
+                    System.out.println("Row " + (i + 1) + " was null, created new row");
                 }
 
                 // Get string from column B (index 1)
                 Cell bCell = row.getCell(1, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-                if (bCell.getCellType() != CellType.STRING || bCell.getStringCellValue().isEmpty()) {
-                    continue; // Skip if column B is empty or not a string
+                if (bCell.getCellType() != CellType.STRING || bCell.getStringCellValue().trim().isEmpty()) {
+                    System.out.println("Row " + (i + 1) + ": Column B is empty or not a string, skipping");
+                    continue;
                 }
-                String bValue = bCell.getStringCellValue();
+                String bValue = bCell.getStringCellValue().trim();
+                System.out.println("Row " + (i + 1) + ": Column B value = " + bValue);
 
-                // Extract PF_XXXXX_YYYY from column B
+                // Extract PF_XXXXX_YYYY
                 Matcher matcher = pattern.matcher(bValue);
                 if (!matcher.find()) {
-                    continue; // Skip if pattern not found
+                    System.out.println("Row " + (i + 1) + ": Pattern PF_XXXXX_YYYY not found in '" + bValue + "', skipping");
+                    continue;
                 }
 
                 String xxxxx = matcher.group(1);
                 String yyyy = matcher.group(2);
                 String convertedPattern = String.format("PF-%s(%s/%s)", xxxxx, yyyy.substring(0, 2), yyyy.substring(2));
+                System.out.println("Row " + (i + 1) + ": Extracted pattern = PF_" + xxxxx + "_" + yyyy + ", Converted = " + convertedPattern);
 
-                // Update column A (index 0) with converted pattern
+                // Update column A (index 0)
                 Cell aCell = row.getCell(0, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                 aCell.setCellValue(convertedPattern);
+                System.out.println("Row " + (i + 1) + ": Updated column A with " + convertedPattern);
 
                 // Get PDF path from column C (index 2)
                 Cell cCell = row.getCell(2, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-                if (cCell.getCellType() != CellType.STRING || cCell.getStringCellValue().isEmpty()) {
+                if (cCell.getCellType() != CellType.STRING || cCell.getStringCellValue().trim().isEmpty()) {
                     Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                     eCell.setCellValue("Invalid PDF Path");
-                    continue; // Skip if column C is empty or not a string
+                    System.out.println("Row " + (i + 1) + ": Column C is empty or not a string, set E to 'Invalid PDF Path'");
+                    continue;
                 }
-                String pdfPath = cCell.getStringCellValue();
+                String pdfPath = cCell.getStringCellValue().trim();
                 File pdfFile = new File(pdfPath);
+                System.out.println("Row " + (i + 1) + ": PDF path = " + pdfPath);
+
                 if (!pdfFile.exists()) {
                     Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                     eCell.setCellValue("PDF Not Found");
+                    System.out.println("Row " + (i + 1) + ": PDF file not found at '" + pdfPath + "', set E to 'PDF Not Found'");
                     continue;
                 }
 
@@ -70,49 +83,52 @@ public class ExcelPDFProcessor {
                 try (PDDocument document = PDDocument.load(pdfFile)) {
                     PDFTextStripper stripper = new PDFTextStripper();
                     int totalPages = document.getNumberOfPages();
+                    System.out.println("Row " + (i + 1) + ": Processing PDF with " + totalPages + " pages");
                     int startPage = -1;
                     int endPage = -1;
 
-                    // Search each page for the converted pattern in footer
+                    // Search each page for the converted pattern
                     for (int page = 1; page <= totalPages; page++) {
                         stripper.setStartPage(page);
                         stripper.setEndPage(page);
                         String text = stripper.getText(document);
-
                         if (text.contains(convertedPattern)) {
                             if (startPage == -1) {
                                 startPage = page;
                             }
                             endPage = page;
+                            System.out.println("Row " + (i + 1) + ": Found pattern on page " + page);
                         }
                     }
 
-                    // Update column E (index 4) with page numbers
+                    // Update column E (index 4)
                     Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                     if (startPage != -1) {
                         if (startPage == endPage) {
                             eCell.setCellValue(String.valueOf(startPage));
+                            System.out.println("Row " + (i + 1) + ": Updated column E with page " + startPage);
                         } else {
                             eCell.setCellValue(startPage + "-" + endPage);
+                            System.out.println("Row " + (i + 1) + ": Updated column E with page range " + startPage + "-" + endPage);
                         }
                     } else {
                         eCell.setCellValue("Pattern Not Found");
+                        System.out.println("Row " + (i + 1) + ": Pattern not found in PDF, set E to 'Pattern Not Found'");
                     }
                 }
             }
 
-            // Close the input stream before writing
+            // Close input stream
             fis.close();
 
-            // Save the updated Excel file to the same path
+            // Save to the same Excel file
             try (FileOutputStream fos = new FileOutputStream(excelFile)) {
                 workbook.write(fos);
+                System.out.println("Excel file saved successfully at: " + excelFile.getAbsolutePath());
             }
 
-            // Close the workbook
+            // Close workbook
             workbook.close();
-
-            System.out.println("Excel file updated successfully at: " + filePath);
 
         } catch (Exception e) {
             System.err.println("Error processing the file: " + e.getMessage());
