@@ -1,0 +1,117 @@
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class ExcelPDFProcessor {
+    public static void main(String[] args) {
+        try {
+            // Load Excel file
+            FileInputStream fis = new FileInputStream(new File("input.xlsx"));
+            Workbook workbook = new XSSFWorkbook(fis);
+            Sheet sheet = workbook.getSheetAt(0);
+
+            // Pattern to extract PF_xxxxx_yyyy
+            Pattern pattern = Pattern.compile("PF_(\\d{5})_(\\d{4})");
+
+            // Iterate through rows starting from row 2 (index 1)
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                // Get string from column B (index 1)
+                Cell bCell = row.getCell(1);
+                if (bCell == null || bCell.getCellType() != CellType.STRING) continue;
+                String bValue = bCell.getStringCellValue();
+
+                // Extract pattern
+                Matcher matcher = pattern.matcher(bValue);
+                if (!matcher.find()) continue;
+
+                String xxxxx = matcher.group(1);
+                String yyyy = matcher.group(2);
+                String convertedPattern = String.format("PF-%s(%s/%s)", xxxxx, yyyy.substring(0, 2), yyyy.substring(2));
+
+                // Update column A with converted pattern
+                Cell aCell = row.getCell(0, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                aCell.setCellValue(convertedPattern);
+
+                // Get PDF path from column C (index 2)
+                Cell cCell = row.getCell(2);
+                if (cCell == null || cCell.getCellType() != CellType.STRING) continue;
+                String pdfPath = cCell.getStringCellValue();
+
+                // Process PDF
+                try (PDDocument document = PDDocument.load(new File(pdfPath))) {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    int totalPages = document.getNumberOfPages();
+                    int startPage = -1;
+                    int endPage = -1;
+
+                    // Search each page for the form name in footer
+                    for (int page = 1; page <= totalPages; page++) {
+                        stripper.setStartPage(page);
+                        stripper.setEndPage(page);
+                        String text = stripper.getText(document);
+
+                        if (text.contains(convertedPattern)) {
+                            if (startPage == -1) {
+                                startPage = page;
+                            }
+                            endPage = page;
+                        }
+                    }
+
+                    // Update column E (index 4) with page numbers
+                    Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                    if (startPage != -1) {
+                        if (startPage == endPage) {
+                            eCell.setCellValue(String.valueOf(startPage));
+                        } else {
+                            eCell.setCellValue(startPage + "-" + endPage);
+                        }
+                    } else {
+                        eCell.setCellValue("Not Found");
+                    }
+                }
+            }
+
+            // Save the updated Excel file
+            FileOutputStream fos = new FileOutputStream(new File("output.xlsx"));
+            workbook.write(fos);
+            workbook.close();
+            fis.close();
+            fos.close();
+
+            System.out.println("Processing completed successfully!");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+<dependencies>
+    <!-- Apache POI for Excel processing -->
+    <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi</artifactId>
+        <version>5.2.3</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi-ooxml</artifactId>
+        <version>5.2.3</version>
+    </dependency>
+    <!-- Apache PDFBox for PDF processing -->
+    <dependency>
+        <groupId>org.apache.pdfbox</groupId>
+        <artifactId>pdfbox</artifactId>
+        <version>2.0.27</version>
+    </dependency>
+</dependencies>
