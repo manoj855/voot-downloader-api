@@ -11,49 +11,67 @@ import java.util.regex.Pattern;
 public class ExcelPDFProcessor {
     public static void main(String[] args) {
         try {
+            // Define the Excel file path (input and output are the same)
+            String filePath = "input.xlsx";
+            File excelFile = new File(filePath);
+
             // Load Excel file
-            FileInputStream fis = new FileInputStream(new File("input.xlsx"));
+            FileInputStream fis = new FileInputStream(excelFile);
             Workbook workbook = new XSSFWorkbook(fis);
             Sheet sheet = workbook.getSheetAt(0);
 
             // Pattern to extract PF_xxxxx_yyyy
             Pattern pattern = Pattern.compile("PF_(\\d{5})_(\\d{4})");
 
-            // Iterate through rows starting from row 2 (index 1)
+            // Iterate through all rows starting from row 2 (index 1)
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                if (row == null) continue;
+                if (row == null) {
+                    row = sheet.createRow(i); // Create row if it doesn't exist
+                }
 
                 // Get string from column B (index 1)
-                Cell bCell = row.getCell(1);
-                if (bCell == null || bCell.getCellType() != CellType.STRING) continue;
+                Cell bCell = row.getCell(1, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                if (bCell.getCellType() != CellType.STRING || bCell.getStringCellValue().isEmpty()) {
+                    continue; // Skip if column B is empty or not a string
+                }
                 String bValue = bCell.getStringCellValue();
 
                 // Extract pattern
                 Matcher matcher = pattern.matcher(bValue);
-                if (!matcher.find()) continue;
+                if (!matcher.find()) {
+                    continue; // Skip if pattern not found
+                }
 
                 String xxxxx = matcher.group(1);
                 String yyyy = matcher.group(2);
                 String convertedPattern = String.format("PF-%s(%s/%s)", xxxxx, yyyy.substring(0, 2), yyyy.substring(2));
 
-                // Update column A with converted pattern
+                // Update column A (index 0) with converted pattern
                 Cell aCell = row.getCell(0, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                 aCell.setCellValue(convertedPattern);
 
                 // Get PDF path from column C (index 2)
-                Cell cCell = row.getCell(2);
-                if (cCell == null || cCell.getCellType() != CellType.STRING) continue;
+                Cell cCell = row.getCell(2, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                if (cCell.getCellType() != CellType.STRING || cCell.getStringCellValue().isEmpty()) {
+                    continue; // Skip if column C is empty or not a string
+                }
                 String pdfPath = cCell.getStringCellValue();
+                File pdfFile = new File(pdfPath);
+                if (!pdfFile.exists()) {
+                    Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                    eCell.setCellValue("PDF Not Found");
+                    continue;
+                }
 
                 // Process PDF
-                try (PDDocument document = PDDocument.load(new File(pdfPath))) {
+                try (PDDocument document = PDDocument.load(pdfFile)) {
                     PDFTextStripper stripper = new PDFTextStripper();
                     int totalPages = document.getNumberOfPages();
                     int startPage = -1;
                     int endPage = -1;
 
-                    // Search each page for the form name in footer
+                    // Search each page for the converted pattern in footer
                     for (int page = 1; page <= totalPages; page++) {
                         stripper.setStartPage(page);
                         stripper.setEndPage(page);
@@ -76,42 +94,27 @@ public class ExcelPDFProcessor {
                             eCell.setCellValue(startPage + "-" + endPage);
                         }
                     } else {
-                        eCell.setCellValue("Not Found");
+                        eCell.setCellValue("Pattern Not Found");
                     }
                 }
             }
 
-            // Save the updated Excel file
-            FileOutputStream fos = new FileOutputStream(new File("output.xlsx"));
-            workbook.write(fos);
-            workbook.close();
+            // Close the input stream before writing to the same file
             fis.close();
-            fos.close();
 
-            System.out.println("Processing completed successfully!");
+            // Save the updated Excel file to the same path
+            try (FileOutputStream fos = new FileOutputStream(excelFile)) {
+                workbook.write(fos);
+            }
+
+            // Close the workbook
+            workbook.close();
+
+            System.out.println("Excel file updated successfully at: " + filePath);
 
         } catch (Exception e) {
+            System.err.println("Error processing the file: " + e.getMessage());
             e.printStackTrace();
         }
     }
 }
-
-<dependencies>
-    <!-- Apache POI for Excel processing -->
-    <dependency>
-        <groupId>org.apache.poi</groupId>
-        <artifactId>poi</artifactId>
-        <version>5.2.3</version>
-    </dependency>
-    <dependency>
-        <groupId>org.apache.poi</groupId>
-        <artifactId>poi-ooxml</artifactId>
-        <version>5.2.3</version>
-    </dependency>
-    <!-- Apache PDFBox for PDF processing -->
-    <dependency>
-        <groupId>org.apache.pdfbox</groupId>
-        <artifactId>pdfbox</artifactId>
-        <version>2.0.27</version>
-    </dependency>
-</dependencies>
