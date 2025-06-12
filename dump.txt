@@ -20,7 +20,7 @@ public class ExcelPDFProcessor {
             Workbook workbook = new XSSFWorkbook(fis);
             Sheet sheet = workbook.getSheetAt(0);
 
-            // Pattern to extract PF_xxxxx_yyyy
+            // Pattern to extract PF_XXXXX_YYYY from complex string
             Pattern pattern = Pattern.compile("PF_(\\d{5})_(\\d{4})");
 
             // Iterate through all rows starting from row 2 (index 1)
@@ -37,7 +37,7 @@ public class ExcelPDFProcessor {
                 }
                 String bValue = bCell.getStringCellValue();
 
-                // Extract pattern
+                // Extract PF_XXXXX_YYYY from column B
                 Matcher matcher = pattern.matcher(bValue);
                 if (!matcher.find()) {
                     continue; // Skip if pattern not found
@@ -54,6 +54,8 @@ public class ExcelPDFProcessor {
                 // Get PDF path from column C (index 2)
                 Cell cCell = row.getCell(2, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                 if (cCell.getCellType() != CellType.STRING || cCell.getStringCellValue().isEmpty()) {
+                    Cell eCell = row.getCell(4, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                    eCell.setCellValue("Invalid PDF Path");
                     continue; // Skip if column C is empty or not a string
                 }
                 String pdfPath = cCell.getStringCellValue();
@@ -99,7 +101,7 @@ public class ExcelPDFProcessor {
                 }
             }
 
-            // Close the input stream before writing to the same file
+            // Close the input stream before writing
             fis.close();
 
             // Save the updated Excel file to the same path
