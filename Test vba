@@ -7,19 +7,19 @@ Sub ProcessInsuranceData()
     If lastRow < 2 Then Exit Sub
     
     ' Constants for columns
-    Const colEff As Long = 10 ' J
-    Const colExp As Long = 11 ' K
+    Const colEff As Long = 10    ' J
+    Const colExp As Long = 11    ' K
     Const colDirect As Long = 15 ' O
-    Const colDereg As Long = 16 ' P
-    Const colIss As Long = 17 ' Q
-    Const colDom As Long = 18 ' R
-    Const colCov As Long = 19 ' S
-    Const colSec As Long = 20 ' T
-    Const colClaim As Long = 21 ' U
+    Const colDereg As Long = 16  ' P
+    Const colIss As Long = 17    ' Q
+    Const colDom As Long = 18    ' R
+    Const colCov As Long = 19    ' S
+    Const colSec As Long = 20    ' T
+    Const colClaim As Long = 21  ' U
     Const colCommonDate As Long = 24 ' X
-    Const colCommonIss As Long = 25 ' Y
-    Const colCommonDom As Long = 26 ' Z
-    Const colTC As Long = 1 ' A
+    Const colCommonIss As Long = 25  ' Y
+    Const colCommonDom As Long = 26  ' Z
+    Const colTC As Long = 1        ' A
     
     Const earlyDate As Date = #1/1/1900#
     Const lateDate As Date = #12/31/9999#
@@ -34,16 +34,8 @@ Sub ProcessInsuranceData()
     
     Dim i As Long
     For i = 2 To lastRow
-        If IsDate(ws.Cells(i, colEff).Value) Then
-            effDates(i) = ws.Cells(i, colEff).Value
-        Else
-            effDates(i) = earlyDate
-        End If
-        If IsDate(ws.Cells(i, colExp).Value) Then
-            expDates(i) = ws.Cells(i, colExp).Value
-        Else
-            expDates(i) = lateDate
-        End If
+        effDates(i) = IIf(IsDate(ws.Cells(i, colEff).Value), ws.Cells(i, colEff).Value, earlyDate)
+        expDates(i) = IIf(IsDate(ws.Cells(i, colExp).Value), ws.Cells(i, colExp).Value, lateDate)
         directs(i) = Trim(ws.Cells(i, colDirect).Value)
         deregs(i) = UCase(Trim(ws.Cells(i, colDereg).Value))
         iss(i) = Trim(ws.Cells(i, colIss).Value)
@@ -60,12 +52,7 @@ Sub ProcessInsuranceData()
         parent(i) = i
     Next i
     
-    ' Find function
-    Dim Find As Variant ' Lambda-like via Application.Run, but use recursive
-    ' Simple recursive Find
-    ' Note: For large N, risk stack overflow, but assuming small lastRow
-    
-    ' Union
+    ' Find and Union
     For i = 2 To lastRow - 1
         For j = i + 1 To lastRow
             Dim maxEff As Date: maxEff = IIf(effDates(i) > effDates(j), effDates(i), effDates(j))
@@ -73,7 +60,6 @@ Sub ProcessInsuranceData()
             If maxEff <= minExp Then
                 If directs(i) = directs(j) And covs(i) = covs(j) And secs(i) = secs(j) And claims(i) = claims(j) Then
                     If deregs(i) = deregs(j) Or deregs(i) = "BOTH" Or deregs(j) = "BOTH" Then
-                        ' Union
                         Dim r1 As Long: r1 = i
                         While parent(r1) <> r1
                             r1 = parent(r1)
@@ -97,7 +83,6 @@ Sub ProcessInsuranceData()
         While parent(root) <> root
             root = parent(root)
         Wend
-        ' Compress
         Dim p As Long: p = i
         While parent(p) <> root
             Dim nextP As Long: nextP = parent(p)
@@ -110,11 +95,11 @@ Sub ProcessInsuranceData()
         groups(root).Add i
     Next i
     
-    ' Group list
+    ' Convert to collection of groups
     Dim groupList As New Collection
     For Each key In groups.Keys
         groupList.Add groups(key)
-    Next
+    Next key
     
     ' Sort groups by min row number
     Dim swapped As Boolean
@@ -123,8 +108,8 @@ Sub ProcessInsuranceData()
         For i = 1 To groupList.Count - 1
             Dim g1 As Collection: Set g1 = groupList(i)
             Dim g2 As Collection: Set g2 = groupList(i + 1)
-            Dim min1 As Long: min1 = Application.Min(g1)
-            Dim min2 As Long: min2 = Application.Min(g2)
+            Dim min1 As Long: min1 = g1(1) ' First item as min
+            Dim min2 As Long: min2 = g2(1) ' First item as min
             If min1 > min2 Then
                 Dim temp As Collection
                 Set temp = groupList(i)
@@ -148,7 +133,7 @@ Sub ProcessInsuranceData()
                 End If
             Next i
         Loop While swapped
-    Next
+    Next g
     
     ' Prepare new data array (copy entire rows)
     Dim maxCol As Long: maxCol = ws.UsedRange.Columns.Count
@@ -158,12 +143,13 @@ Sub ProcessInsuranceData()
     Dim newIdx As Long: newIdx = 1
     For Each g In groupList
         For Each oldRow In g
-            For Dim c As Long = 1 To maxCol
+            Dim c As Long
+            For c = 1 To maxCol
                 newData(newIdx, c) = ws.Cells(oldRow, c).Value
             Next c
             newIdx = newIdx + 1
-        Next
-    Next
+        Next oldRow
+    Next g
     
     ' Clear old data
     ws.Rows("2:" & lastRow).ClearContents ' Clear contents only, keep formats if any
@@ -171,7 +157,7 @@ Sub ProcessInsuranceData()
     ' Paste new data
     ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, maxCol)).Value = newData
     
-    ' Now process groups for commons, TC, and merging
+    ' Process groups for commons, TC, and merging
     Application.DisplayAlerts = False
     Dim currRow As Long: currRow = 2
     For Each g In groupList
@@ -184,7 +170,7 @@ Sub ProcessInsuranceData()
                 If effDates(oldRow) > maxEff Then maxEff = effDates(oldRow)
                 hasEff = True
             End If
-        Next
+        Next oldRow
         Dim commonDate As Variant
         If Not hasEff Then
             commonDate = ""
@@ -196,14 +182,14 @@ Sub ProcessInsuranceData()
         Dim issDict As Object: Set issDict = CreateObject("Scripting.Dictionary")
         For Each oldRow In g
             If iss(oldRow) <> "" Then issDict(iss(oldRow)) = 1
-        Next
+        Next oldRow
         Dim commonIss As String: commonIss = Join(issDict.Keys, ",")
         
         ' Common domicile
         Dim domDict As Object: Set domDict = CreateObject("Scripting.Dictionary")
         For Each oldRow In g
             If doms(oldRow) <> "" Then domDict(doms(oldRow)) = 1
-        Next
+        Next oldRow
         Dim commonDom As String: commonDom = Join(domDict.Keys, ",")
         
         ' Fill for group rows
@@ -218,7 +204,7 @@ Sub ProcessInsuranceData()
             n = n + 1
         Next i
         
-        ' Merge cells in X, Y, Z if group >1
+        ' Merge cells in X, Y, Z if group > 1
         If gSize > 1 Then
             ws.Range(ws.Cells(groupStart, colCommonDate), ws.Cells(groupEnd, colCommonDate)).Merge
             ws.Range(ws.Cells(groupStart, colCommonIss), ws.Cells(groupEnd, colCommonIss)).Merge
@@ -226,6 +212,6 @@ Sub ProcessInsuranceData()
         End If
         
         currRow = currRow + gSize
-    Next
+    Next g
     Application.DisplayAlerts = True
 End Sub
