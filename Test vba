@@ -55,7 +55,7 @@ Sub ProcessInsuranceData()
     ' Find and Union
     For i = 2 To lastRow - 1
         For j = i + 1 To lastRow
-            Dim maxEff As Date: maxEff = IIf(effDates(i) > effDates(j), effDates(i), effDates(j))
+            Dim maxEff As Date: maxEff = IIf(effDates(i) > effDates(j), effDates(i), effDates(j)) ' Temporary for comparison
             Dim minExp As Date: minExp = IIf(expDates(i) < expDates(j), expDates(i), expDates(j))
             If maxEff <= minExp Then
                 If directs(i) = directs(j) And covs(i) = covs(j) And secs(i) = secs(j) And claims(i) = claims(j) Then
@@ -163,7 +163,7 @@ Sub ProcessInsuranceData()
     For Each g In groupList
         Dim gSize As Long: gSize = g.Count
         ' Calculate common date (overlap start = max eff)
-        Dim maxEff As Date: maxEff = earlyDate
+        Dim maxEff As Date: maxEff = earlyDate ' Declare here
         Dim hasEff As Boolean: hasEff = False
         For Each oldRow In g
             If effDates(oldRow) <> earlyDate Then
