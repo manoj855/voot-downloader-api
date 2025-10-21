@@ -1,161 +1,110 @@
-Sub Generate_Common_TestCases_AllSheets()
+Sub MergeCommonRecords()
+
     Dim ws As Worksheet
-    Set ws = ActiveSheet ' Works for any active sheet
-    
-    Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
-    
+    Dim logWs As Worksheet
+    Dim lastRow As Long, logRow As Long
     Dim i As Long, j As Long
-    Dim tcCount As Long: tcCount = 1
-    Dim eff1 As Date, exp1 As Date, eff2 As Date, exp2 As Date
-    Dim issue1 As String, issue2 As String, dom1 As String, dom2 As String
-    Dim overlap As Boolean
-    Dim groupIDs() As Long
-    Dim dictIssue As Object, dictDom As Object
-    Dim arr1, arr2, val As Variant
+    Dim issue1 As String, issue2 As String
+    Dim dom1 As String, dom2 As String
+    Dim dereg1 As String, dereg2 As String
+    Dim eff1 As Variant, eff2 As Variant
+    Dim tmpRow As Range
     
-    ReDim groupIDs(2 To lastRow)
+    On Error Resume Next
+    Set logWs = ThisWorkbook.Sheets("Merge_Log")
+    On Error GoTo 0
     
-    ' --- Compare all combinations ---
-    For i = 2 To lastRow
-        If groupIDs(i) = 0 Then groupIDs(i) = tcCount
-        
-        eff1 = ws.Cells(i, "J").Value
-        exp1 = ws.Cells(i, "K").Value
-        issue1 = LCase(Trim(ws.Cells(i, "Q").Value))
-        dom1 = LCase(Trim(ws.Cells(i, "R").Value))
+    ' Create log sheet if not found
+    If logWs Is Nothing Then
+        Set logWs = ThisWorkbook.Sheets.Add
+        logWs.Name = "Merge_Log"
+        logWs.Range("A1").Value = "Merged Records Log"
+        logWs.Range("A2").Value = "Base Row"
+        logWs.Range("B2").Value = "Merged Row"
+        logRow = 3
+    Else
+        logRow = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    End If
+    
+    ' Use active sheet
+    Set ws = ActiveSheet
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    ' Loop through each record
+    For i = 2 To lastRow - 1
+        issue1 = LCase(Trim(ws.Cells(i, "K").Value))   ' Issuing company
+        dom1 = LCase(Trim(ws.Cells(i, "L").Value))     ' Domicile
+        dereg1 = LCase(Trim(ws.Cells(i, "P").Value))   ' Dereg
+        eff1 = ws.Cells(i, "I").Value                  ' Effective date
         
         For j = i + 1 To lastRow
-            If groupIDs(j) = 0 Then
-                eff2 = ws.Cells(j, "J").Value
-                exp2 = ws.Cells(j, "K").Value
-                issue2 = LCase(Trim(ws.Cells(j, "Q").Value))
-                dom2 = LCase(Trim(ws.Cells(j, "R").Value))
-                
-                ' --- Date Overlap Check ---
-                overlap = False
-                If (eff2 <= exp1 And exp2 >= eff1) Then overlap = True
-                
-                ' --- If date overlap, compare deeper fields ---
-                If overlap Then
-                    ' Compare for partial match in comma-separated Issuing Company
-                    arr1 = Split(issue1, ",")
-                    arr2 = Split(issue2, ",")
-                    Set dictIssue = CreateObject("Scripting.Dictionary")
-                    For Each val In arr1
-                        dictIssue(Trim(val)) = 1
-                    Next val
-                    For Each val In arr2
-                        If dictIssue.Exists(Trim(val)) Then
-                            groupIDs(j) = groupIDs(i)
-                            Exit For
-                        End If
-                    Next val
+            issue2 = LCase(Trim(ws.Cells(j, "K").Value))
+            dom2 = LCase(Trim(ws.Cells(j, "L").Value))
+            dereg2 = LCase(Trim(ws.Cells(j, "P").Value))
+            eff2 = ws.Cells(j, "I").Value
+            
+            ' ---- MATCH CONDITIONS ----
+            If IsCommon(issue1, issue2) And IsCommon(dom1, dom2) Then
+                ' Dereg matches (Both covers Y and N)
+                If (dereg1 = dereg2) Or (dereg1 = "both") Or (dereg2 = "both") Then
+                    
+                    ' Effective date priority — at least one valid date is okay
+                    If (Not IsEmpty(eff1)) Or (Not IsEmpty(eff2)) Then
+                        
+                        ' Move record j below i
+                        Set tmpRow = ws.Rows(j)
+                        tmpRow.Cut
+                        ws.Rows(i + 1).Insert Shift:=xlDown
+                        
+                        ' Log the merge
+                        logWs.Cells(logRow, "A").Value = i
+                        logWs.Cells(logRow, "B").Value = j
+                        logRow = logRow + 1
+                        
+                        Application.CutCopyMode = False
+                        
+                        ' Update lastRow (because we inserted a row)
+                        lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+                        Exit For
+                    End If
                 End If
             End If
         Next j
-        
-        tcCount = tcCount + 1
     Next i
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
     
-    ' --- Assign test case IDs + Common Fields ---
-    Dim currentGroup As Long
-    Dim commonDate As Date
-    Dim commonIss As String, commonDom As String
-    
-    For i = 2 To lastRow
-        If groupIDs(i) = 0 Then groupIDs(i) = i
-    Next i
-    
-    ' Sort rows by groupIDs
-    Dim swapped As Boolean
-    Dim tmpVal As Variant
-    Do
-        swapped = False
-        For i = 2 To lastRow - 1
-            If groupIDs(i) > groupIDs(i + 1) Then
-                ws.Rows(i + 1).Cut
-                ws.Rows(i).Insert Shift:=xlDown
-                tmpVal = groupIDs(i)
-                groupIDs(i) = groupIDs(i + 1)
-                groupIDs(i + 1) = tmpVal
-                swapped = True
-                Exit For
-            End If
-        Next i
-    Loop While swapped
-    
-    ' Now fill TC_x, Common Date, Issuing Company, Domicile
-    Dim curTC As Long
-    curTC = 1
-    For i = 2 To lastRow
-        ws.Cells(i, "A").Value = "TC_" & groupIDs(i)
-        
-        ' --- Common Date ---
-        If ws.Cells(i, "J").Value <> "" And ws.Cells(i, "K").Value <> "" Then
-            If ws.Cells(i, "J").Value > commonDate Then
-                commonDate = ws.Cells(i, "J").Value
-            End If
-        End If
-        
-        ' --- Common Issuing Company ---
-        issue1 = ws.Cells(i, "Q").Value
-        If commonIss = "" Then
-            commonIss = issue1
-        Else
-            commonIss = GetCommonCommaValues(commonIss, issue1)
-        End If
-        
-        ' --- Common Domicile ---
-        dom1 = ws.Cells(i, "R").Value
-        If commonDom = "" Then
-            commonDom = dom1
-        Else
-            commonDom = GetCommonCommaValues(commonDom, dom1)
-        End If
-        
-        ' Check if next row is different group or end reached
-        If i = lastRow Or groupIDs(i) <> groupIDs(i + 1) Then
-            ws.Cells(i, "X").Value = commonDate
-            ws.Cells(i, "Y").Value = commonIss
-            ws.Cells(i, "Z").Value = commonDom
-            
-            ' Reset for next group
-            commonDate = 0
-            commonIss = ""
-            commonDom = ""
-            curTC = curTC + 1
-        End If
-    Next i
-    
-    MsgBox "✅ Common test cases generated for all sheets successfully!", vbInformation
+    MsgBox "✅ Merging completed successfully! Check 'Merge_Log' sheet for details.", vbInformation
+
 End Sub
 
-' --- Helper Function: Get Common Values from comma-separated lists ---
-Function GetCommonCommaValues(str1 As String, str2 As String) As String
-    Dim arr1, arr2
-    Dim result As String
-    Dim dict As Object
-    Dim val As Variant
-    Set dict = CreateObject("Scripting.Dictionary")
+' ---- Helper Function: Checks if there is at least one common word between two comma-separated strings ----
+Function IsCommon(str1 As String, str2 As String) As Boolean
+    Dim arr1() As String, arr2() As String
+    Dim x As Long, y As Long
     
-    arr1 = Split(LCase(str1), ",")
-    arr2 = Split(LCase(str2), ",")
+    If Trim(str1) = "" Or Trim(str2) = "" Then
+        IsCommon = False
+        Exit Function
+    End If
     
-    For Each val In arr1
-        dict(Trim(val)) = 1
-    Next val
+    arr1 = Split(str1, ",")
+    arr2 = Split(str2, ",")
     
-    result = ""
-    For Each val In arr2
-        If dict.Exists(Trim(val)) Then
-            If result = "" Then
-                result = Trim(val)
-            Else
-                result = result & ", " & Trim(val)
+    For x = LBound(arr1) To UBound(arr1)
+        For y = LBound(arr2) To UBound(arr2)
+            If Trim(arr1(x)) <> "" And Trim(arr2(y)) <> "" Then
+                If InStr(Trim(arr2(y)), Trim(arr1(x))) > 0 Or InStr(Trim(arr1(x)), Trim(arr2(y))) > 0 Then
+                    IsCommon = True
+                    Exit Function
+                End If
             End If
-        End If
-    Next val
+        Next y
+    Next x
     
-    GetCommonCommaValues = result
+    IsCommon = False
 End Function
