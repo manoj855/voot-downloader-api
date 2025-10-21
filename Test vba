@@ -1,0 +1,161 @@
+Sub Generate_Common_TestCases_AllSheets()
+    Dim ws As Worksheet
+    Set ws = ActiveSheet ' Works for any active sheet
+    
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
+    
+    Dim i As Long, j As Long
+    Dim tcCount As Long: tcCount = 1
+    Dim eff1 As Date, exp1 As Date, eff2 As Date, exp2 As Date
+    Dim issue1 As String, issue2 As String, dom1 As String, dom2 As String
+    Dim overlap As Boolean
+    Dim groupIDs() As Long
+    Dim dictIssue As Object, dictDom As Object
+    Dim arr1, arr2, val As Variant
+    
+    ReDim groupIDs(2 To lastRow)
+    
+    ' --- Compare all combinations ---
+    For i = 2 To lastRow
+        If groupIDs(i) = 0 Then groupIDs(i) = tcCount
+        
+        eff1 = ws.Cells(i, "J").Value
+        exp1 = ws.Cells(i, "K").Value
+        issue1 = LCase(Trim(ws.Cells(i, "Q").Value))
+        dom1 = LCase(Trim(ws.Cells(i, "R").Value))
+        
+        For j = i + 1 To lastRow
+            If groupIDs(j) = 0 Then
+                eff2 = ws.Cells(j, "J").Value
+                exp2 = ws.Cells(j, "K").Value
+                issue2 = LCase(Trim(ws.Cells(j, "Q").Value))
+                dom2 = LCase(Trim(ws.Cells(j, "R").Value))
+                
+                ' --- Date Overlap Check ---
+                overlap = False
+                If (eff2 <= exp1 And exp2 >= eff1) Then overlap = True
+                
+                ' --- If date overlap, compare deeper fields ---
+                If overlap Then
+                    ' Compare for partial match in comma-separated Issuing Company
+                    arr1 = Split(issue1, ",")
+                    arr2 = Split(issue2, ",")
+                    Set dictIssue = CreateObject("Scripting.Dictionary")
+                    For Each val In arr1
+                        dictIssue(Trim(val)) = 1
+                    Next val
+                    For Each val In arr2
+                        If dictIssue.Exists(Trim(val)) Then
+                            groupIDs(j) = groupIDs(i)
+                            Exit For
+                        End If
+                    Next val
+                End If
+            End If
+        Next j
+        
+        tcCount = tcCount + 1
+    Next i
+    
+    ' --- Assign test case IDs + Common Fields ---
+    Dim currentGroup As Long
+    Dim commonDate As Date
+    Dim commonIss As String, commonDom As String
+    
+    For i = 2 To lastRow
+        If groupIDs(i) = 0 Then groupIDs(i) = i
+    Next i
+    
+    ' Sort rows by groupIDs
+    Dim swapped As Boolean
+    Dim tmpVal As Variant
+    Do
+        swapped = False
+        For i = 2 To lastRow - 1
+            If groupIDs(i) > groupIDs(i + 1) Then
+                ws.Rows(i + 1).Cut
+                ws.Rows(i).Insert Shift:=xlDown
+                tmpVal = groupIDs(i)
+                groupIDs(i) = groupIDs(i + 1)
+                groupIDs(i + 1) = tmpVal
+                swapped = True
+                Exit For
+            End If
+        Next i
+    Loop While swapped
+    
+    ' Now fill TC_x, Common Date, Issuing Company, Domicile
+    Dim curTC As Long
+    curTC = 1
+    For i = 2 To lastRow
+        ws.Cells(i, "A").Value = "TC_" & groupIDs(i)
+        
+        ' --- Common Date ---
+        If ws.Cells(i, "J").Value <> "" And ws.Cells(i, "K").Value <> "" Then
+            If ws.Cells(i, "J").Value > commonDate Then
+                commonDate = ws.Cells(i, "J").Value
+            End If
+        End If
+        
+        ' --- Common Issuing Company ---
+        issue1 = ws.Cells(i, "Q").Value
+        If commonIss = "" Then
+            commonIss = issue1
+        Else
+            commonIss = GetCommonCommaValues(commonIss, issue1)
+        End If
+        
+        ' --- Common Domicile ---
+        dom1 = ws.Cells(i, "R").Value
+        If commonDom = "" Then
+            commonDom = dom1
+        Else
+            commonDom = GetCommonCommaValues(commonDom, dom1)
+        End If
+        
+        ' Check if next row is different group or end reached
+        If i = lastRow Or groupIDs(i) <> groupIDs(i + 1) Then
+            ws.Cells(i, "X").Value = commonDate
+            ws.Cells(i, "Y").Value = commonIss
+            ws.Cells(i, "Z").Value = commonDom
+            
+            ' Reset for next group
+            commonDate = 0
+            commonIss = ""
+            commonDom = ""
+            curTC = curTC + 1
+        End If
+    Next i
+    
+    MsgBox "✅ Common test cases generated for all sheets successfully!", vbInformation
+End Sub
+
+' --- Helper Function: Get Common Values from comma-separated lists ---
+Function GetCommonCommaValues(str1 As String, str2 As String) As String
+    Dim arr1, arr2
+    Dim result As String
+    Dim dict As Object
+    Dim val As Variant
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    arr1 = Split(LCase(str1), ",")
+    arr2 = Split(LCase(str2), ",")
+    
+    For Each val In arr1
+        dict(Trim(val)) = 1
+    Next val
+    
+    result = ""
+    For Each val In arr2
+        If dict.Exists(Trim(val)) Then
+            If result = "" Then
+                result = Trim(val)
+            Else
+                result = result & ", " & Trim(val)
+            End If
+        End If
+    Next val
+    
+    GetCommonCommaValues = result
+End Function
