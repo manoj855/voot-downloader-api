@@ -1,6 +1,6 @@
 Option Explicit
 
-Sub BuildTestCaseGroups()
+Sub BuildTestCaseGroups_StrictMatch()
     Dim ws As Worksheet, logWs As Worksheet
     Set ws = ActiveSheet
     
@@ -18,9 +18,9 @@ Sub BuildTestCaseGroups()
     If logWs Is Nothing Then
         Set logWs = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
         logWs.Name = "Merge_Log"
-        logWs.Range("A1:D1").Value = Array("GroupID", "Row", "Note", "Timestamp")
+        logWs.Range("A1:E1").Value = Array("GroupID", "Row", "Note", "CommonIss", "Timestamp")
     Else
-        logWs.Range("A2:D" & logWs.Rows.Count).ClearContents
+        logWs.Range("A2:E" & logWs.Rows.Count).ClearContents
     End If
     Dim logRow As Long: logRow = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
     
@@ -33,11 +33,11 @@ Sub BuildTestCaseGroups()
     Dim i As Long, j As Long
     Dim nextGroup As Long: nextGroup = 1
     
-    ' Helper arrays read once to speed up
-    Dim effArr() As Variant, expArr() As Variant
-    Dim directArr() As Variant, deregArr() As Variant
-    Dim issueArr() As Variant, domArr() As Variant
-    Dim covArr() As Variant, sectArr() As Variant, claimArr() As Variant
+    ' Read columns into arrays to speed up
+    Dim effArr As Variant, expArr As Variant
+    Dim directArr As Variant, deregArr As Variant
+    Dim issueArr As Variant, domArr As Variant
+    Dim covArr As Variant, sectArr As Variant, claimArr As Variant
     
     effArr = ws.Range("J2:J" & lastRow).Value2
     expArr = ws.Range("K2:K" & lastRow).Value2
@@ -49,22 +49,18 @@ Sub BuildTestCaseGroups()
     sectArr = ws.Range("T2:T" & lastRow).Value2
     claimArr = ws.Range("U2:U" & lastRow).Value2
     
-    ' Convert values safely to strings/variants
-    Dim effVal As Variant, expVal As Variant
-    
-    ' --- Step 2: Build groups (pairwise + transitive)
+    ' --- Step 2: Build groups (pairwise + transitive) using strict list intersection ---
     For i = 2 To lastRow
         If groupID(i) = 0 Then
             groupID(i) = nextGroup
-            ' compare with j
             For j = i + 1 To lastRow
                 If groupID(j) = 0 Then
-                    If RowsMatch(i, j, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr, lastRow) Then
+                    If RowsMatch_Strict(i, j, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr) Then
                         groupID(j) = groupID(i)
                     End If
                 End If
             Next j
-            ' After scanning j once, ensure transitive grouping: loop again until no change
+            ' transitive closure
             Dim changed As Boolean
             Do
                 changed = False
@@ -73,7 +69,7 @@ Sub BuildTestCaseGroups()
                         Dim k As Long
                         For k = 2 To lastRow
                             If groupID(k) = 0 Then
-                                If RowsMatch(j, k, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr, lastRow) Then
+                                If RowsMatch_Strict(j, k, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr) Then
                                     groupID(k) = groupID(i)
                                     changed = True
                                 End If
@@ -86,11 +82,10 @@ Sub BuildTestCaseGroups()
         End If
     Next i
     
-    ' --- Step 3: Reorder rows by groupID to cluster them (stable within group by original order)
+    ' --- Step 3: Reorder rows by groupID (stable within group) ---
     Dim orderArr() As Long
     ReDim orderArr(2 To lastRow)
-    Dim idx As Long
-    idx = 2
+    Dim idx As Long: idx = 2
     Dim g As Long
     For g = 1 To nextGroup - 1
         For i = 2 To lastRow
@@ -100,188 +95,146 @@ Sub BuildTestCaseGroups()
             End If
         Next i
     Next g
-    ' If any leftover (shouldn't be) append
+    ' fill any remaining
     For i = 2 To lastRow
         If orderArr(i) = 0 Then orderArr(i) = i
     Next i
     
-    ' Build a temporary sheet to reorder safely
     Dim tmp As Worksheet
     Set tmp = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
     tmp.Name = "TMP_Reorder_" & Format(Now, "hhmmss")
-    
-    ' Copy header
     ws.Rows(1).Copy tmp.Rows(1)
     Dim destRow As Long: destRow = 2
     For i = 2 To lastRow
         ws.Rows(orderArr(i)).Copy tmp.Rows(destRow)
+        tmp.Cells(destRow, "Z").Value = groupID(orderArr(i)) ' keep group id in Z temporarily for verification
         logWs.Cells(logRow, 1).Value = groupID(orderArr(i))
         logWs.Cells(logRow, 2).Value = orderArr(i)
-        logWs.Cells(logRow, 3).Value = "Moved to position " & destRow
-        logWs.Cells(logRow, 4).Value = Now
+        logWs.Cells(logRow, 3).Value = "Moved to " & destRow
+        logWs.Cells(logRow, 5).Value = Now
         logRow = logRow + 1
         destRow = destRow + 1
     Next i
     
-    ' Replace old sheet rows with tmp rows
-    ws.Rows(1 & ":" & lastRow).ClearContents
-    tmp.Rows(1 & ":" & destRow - 1).Copy ws.Rows(1)
-    
-    ' remove temp sheet
+    ' Replace original with temp copy
+    ws.Rows("1:" & lastRow).ClearContents
+    tmp.Rows("1:" & destRow - 1).Copy ws.Rows(1)
     Application.DisplayAlerts = False
     tmp.Delete
     Application.DisplayAlerts = True
     
-    ' --- Step 4: For each group compute common fields and write TC & X/Y/Z and merge A-C ---
+    ' --- Step 4: For each contiguous group compute common fields and write TC & X/Y/Z and merge A-C ---
     lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
     Dim rowPtr As Long: rowPtr = 2
-    Dim currentGroupID As Long
-    Dim groupStart As Long, groupEnd As Long
-    currentGroupID = 1
-    Dim totalGroups As Long: totalGroups = nextGroup - 1
+    Dim groupCounter As Long: groupCounter = 1
     
     Do While rowPtr <= lastRow
-        groupStart = rowPtr
-        ' Count how many rows belong to this groupID by reading original groupID mapping orderArr
-        Dim rowsInGroup As Long
-        rowsInGroup = 0
-        Dim r As Long
-        ' We reconstruct group membership by reading TC column? but we didn't fill; instead we use group sequence order: group IDs were placed in orderArr sorted by group earlier.
-        ' Because we reordered by groups, consecutive rows belong to currentGroupID until number of rows equal to count
-        ' Count members: look into Merge_Log to get mapping? Simpler: iterate forward until next group's first row (we changed order such that groups are contiguous)
-        Dim currentRowGroup As Long
-        ' Use helper: treat the sequence in log we've created earlier: but easiest is to detect boundary by looking at Issuing intersection? To be robust, we detect boundaries by checking group number from the log we wrote earlier saved original groupID per moved row.
-        ' Instead, simpler: we will scan forward while the rows belong to the same original group recorded in column we didn't fill. To avoid complexity, we'll compute group membership again using RowsMatch against groupStart row for all subsequent rows until mismatch. That is safe since rows in different groups shouldn't match base row criteria.
-        For r = rowPtr To lastRow
-            If r = rowPtr Then
-                rowsInGroup = rowsInGroup + 1
+        ' find group block: rows have same temp group id in column Z
+        Dim thisGroupID As Variant
+        thisGroupID = ws.Cells(rowPtr, "Z").Value
+        Dim startRow As Long: startRow = rowPtr
+        Dim endRow As Long: endRow = rowPtr
+        Dim rr As Long
+        For rr = rowPtr + 1 To lastRow
+            If ws.Cells(rr, "Z").Value = thisGroupID Then
+                endRow = rr
             Else
-                If RowsMatch(rowPtr, r, _
-                             GetRangeArray(ws, "J", rowPtr, lastRow), _
-                             GetRangeArray(ws, "K", rowPtr, lastRow), _
-                             GetRangeArray(ws, "O", rowPtr, lastRow), _
-                             GetRangeArray(ws, "P", rowPtr, lastRow), _
-                             GetRangeArray(ws, "Q", rowPtr, lastRow), _
-                             GetRangeArray(ws, "R", rowPtr, lastRow), _
-                             GetRangeArray(ws, "S", rowPtr, lastRow), _
-                             GetRangeArray(ws, "T", rowPtr, lastRow), _
-                             GetRangeArray(ws, "U", rowPtr, lastRow), lastRow) Then
-                    rowsInGroup = rowsInGroup + 1
-                Else
-                    Exit For
-                End If
+                Exit For
             End If
-        Next r
+        Next rr
         
-        groupEnd = rowPtr + rowsInGroup - 1
-        
-        ' Compute common date range and intersections across groupStart..groupEnd
-        Dim commonStart As Date
-        Dim commonEnd As Date
-        Dim haveStart As Boolean: haveStart = False
-        Dim haveEnd As Boolean: haveEnd = False
-        Dim minExpiry As Double: minExpiry = 1E+99
-        Dim maxEff As Double: maxEff = -1E+99
-        
+        ' compute intersection for issuing and domicile using strict intersection
         Dim commonIss As String: commonIss = ""
         Dim commonDom As String: commonDom = ""
-        
-        For r = groupStart To groupEnd
-            ' Effective
-            If IsDate(ws.Cells(r, "J").Value) Then
-                If Not haveStart Then
-                    maxEff = CDbl(CDate(ws.Cells(r, "J").Value))
-                    haveStart = True
-                Else
-                    If CDbl(CDate(ws.Cells(r, "J").Value)) > maxEff Then maxEff = CDbl(CDate(ws.Cells(r, "J").Value))
-                End If
-            End If
-            ' Expiry
-            If IsDate(ws.Cells(r, "K").Value) Then
-                If Not haveEnd Then
-                    minExpiry = CDbl(CDate(ws.Cells(r, "K").Value))
-                    haveEnd = True
-                Else
-                    If CDbl(CDate(ws.Cells(r, "K").Value)) < minExpiry Then minExpiry = CDbl(CDate(ws.Cells(r, "K").Value))
-                End If
-            End If
-            ' Issuing intersection
+        Dim r As Long
+        For r = startRow To endRow
             If Trim(ws.Cells(r, "Q").Value) <> "" Then
                 If commonIss = "" Then
                     commonIss = ws.Cells(r, "Q").Value
                 Else
-                    commonIss = IntersectCommaLists(commonIss, ws.Cells(r, "Q").Value)
+                    commonIss = IntersectCommaLists_Strict(commonIss, ws.Cells(r, "Q").Value)
                 End If
             End If
-            ' Domicile intersection
             If Trim(ws.Cells(r, "R").Value) <> "" Then
                 If commonDom = "" Then
                     commonDom = ws.Cells(r, "R").Value
                 Else
-                    commonDom = IntersectCommaLists(commonDom, ws.Cells(r, "R").Value)
+                    commonDom = IntersectCommaLists_Strict(commonDom, ws.Cells(r, "R").Value)
                 End If
             End If
         Next r
         
-        ' Determine common date result: rules:
-        ' - If there is at least one non-blank Effective, use maxEff as start.
-        ' - For expiry: if any expiry exists, minExpiry is end; if none exist treat as far future (so overlap likely)
-        Dim finalCommonDate As Variant
-        finalCommonDate = ""
+        ' compute common date start per earlier rules (max of eff dates present), validate with expiries if present
+        Dim haveStart As Boolean: haveStart = False
+        Dim maxEff As Double: maxEff = -1E+99
+        Dim haveExpiry As Boolean: haveExpiry = False
+        Dim minExp As Double: minExp = 1E+99
+        For r = startRow To endRow
+            If IsDate(ws.Cells(r, "J").Value) Then
+                haveStart = True
+                If CDbl(CDate(ws.Cells(r, "J").Value)) > maxEff Then maxEff = CDbl(CDate(ws.Cells(r, "J").Value))
+            End If
+            If IsDate(ws.Cells(r, "K").Value) Then
+                haveExpiry = True
+                If CDbl(CDate(ws.Cells(r, "K").Value)) < minExp Then minExp = CDbl(CDate(ws.Cells(r, "K").Value))
+            End If
+        Next r
+        
+        Dim finalCommonDate As Variant: finalCommonDate = ""
         If haveStart Then
-            If Not haveEnd Then
-                ' No expiry constraints -> common start is maxEff
+            If Not haveExpiry Then
                 finalCommonDate = CDate(maxEff)
             Else
-                ' Both exist -> check if maxEff <= minExpiry
-                If maxEff <= minExpiry Then
-                    finalCommonDate = CDate(maxEff)
-                Else
-                    finalCommonDate = "" ' no valid overlap
-                End If
+                If maxEff <= minExp Then finalCommonDate = CDate(maxEff) Else finalCommonDate = ""
             End If
         Else
-            ' No effective specified in any -> per rule "applies to all" - set blank to indicate applies-to-all
-            finalCommonDate = ""
+            finalCommonDate = "" ' applies to all
         End If
         
-        ' Write TC id into A, merge A:C across group, write X/Y/Z to first row of group
-        Dim tcLabel As String
-        tcLabel = "TC_" & CStr(rowPtr - 1) ' unique label based on position (you can change to incremental group counter)
+        ' write TC label, write X/Y/Z on startRow, merge A:B:C across block
+        Dim tcLabel As String: tcLabel = "TC_" & groupCounter
+        ws.Range(ws.Cells(startRow, "A"), ws.Cells(endRow, "A")).Merge
+        ws.Range(ws.Cells(startRow, "B"), ws.Cells(endRow, "B")).Merge
+        ws.Range(ws.Cells(startRow, "C"), ws.Cells(endRow, "C")).Merge
+        ws.Cells(startRow, "A").Value = tcLabel
+        If finalCommonDate <> "" Then ws.Cells(startRow, "X").Value = finalCommonDate
+        ws.Cells(startRow, "Y").Value = commonIss
+        ws.Cells(startRow, "Z").Value = commonDom
         
-        ws.Range(ws.Cells(groupStart, "A"), ws.Cells(groupEnd, "A")).Merge
-        ws.Range(ws.Cells(groupStart, "B"), ws.Cells(groupEnd, "B")).Merge
-        ws.Range(ws.Cells(groupStart, "C"), ws.Cells(groupEnd, "C")).Merge
-        ws.Cells(groupStart, "A").Value = tcLabel
+        ' log the commonIss for verification
+        logWs.Cells(logRow, 1).Value = groupCounter
+        logWs.Cells(logRow, 2).Value = startRow
+        logWs.Cells(logRow, 3).Value = "Common Iss/Dom for group"
+        logWs.Cells(logRow, 4).Value = commonIss & " | " & commonDom
+        logWs.Cells(logRow, 5).Value = Now
+        logRow = logRow + 1
         
-        If finalCommonDate <> "" Then ws.Cells(groupStart, "X").Value = finalCommonDate
-        ws.Cells(groupStart, "Y").Value = commonIss
-        ws.Cells(groupStart, "Z").Value = commonDom
-        
-        rowPtr = groupEnd + 1
+        groupCounter = groupCounter + 1
+        rowPtr = endRow + 1
     Loop
+    
+    ' clear the temp group id column Z we used
+    ws.Range("Z2:Z" & lastRow).ClearContents
     
     Application.EnableEvents = True
     Application.ScreenUpdating = True
     
-    MsgBox "Grouping & merging completed. See Merge_Log for details.", vbInformation
+    MsgBox "Grouping & merging completed with strict token matching. Check Merge_Log for details.", vbInformation
 End Sub
 
 ' -----------------------
-' Helper: check if two rows match according to rules
-Function RowsMatch(iRow As Long, jRow As Long, _
+' Strict RowsMatch using arrays (same signature as earlier RowsMatch but uses strict list intersection)
+Function RowsMatch_Strict(iRow As Long, jRow As Long, _
                    effArr As Variant, expArr As Variant, _
                    directArr As Variant, deregArr As Variant, _
                    issueArr As Variant, domArr As Variant, _
-                   covArr As Variant, sectArr As Variant, claimArr As Variant, _
-                   lastRow As Long) As Boolean
+                   covArr As Variant, sectArr As Variant, claimArr As Variant) As Boolean
     
     Dim iIdx As Long, jIdx As Long
-    iIdx = iRow - 1 ' because arrays read start at row2 => element 1 corresponds to row2
+    iIdx = iRow - 1
     jIdx = jRow - 1
-    RowsMatch = False
+    RowsMatch_Strict = False
     
-    ' Safe read
     Dim eff1 As Variant, eff2 As Variant
     eff1 = effArr(iIdx, 1)
     eff2 = effArr(jIdx, 1)
@@ -299,12 +252,12 @@ Function RowsMatch(iRow As Long, jRow As Long, _
     dereg2 = LCase(Trim(CStr(deregArr(jIdx, 1))))
     
     Dim issue1 As String, issue2 As String
-    issue1 = LCase(Trim(CStr(issueArr(iIdx, 1))))
-    issue2 = LCase(Trim(CStr(issueArr(jIdx, 1))))
+    issue1 = Trim(CStr(issueArr(iIdx, 1)))
+    issue2 = Trim(CStr(issueArr(jIdx, 1)))
     
     Dim dom1 As String, dom2 As String
-    dom1 = LCase(Trim(CStr(domArr(iIdx, 1))))
-    dom2 = LCase(Trim(CStr(domArr(jIdx, 1))))
+    dom1 = Trim(CStr(domArr(iIdx, 1)))
+    dom2 = Trim(CStr(domArr(jIdx, 1)))
     
     Dim cov1 As String, cov2 As String, sect1 As String, sect2 As String, claim1 As String, claim2 As String
     cov1 = LCase(Trim(CStr(covArr(iIdx, 1))))
@@ -314,46 +267,46 @@ Function RowsMatch(iRow As Long, jRow As Long, _
     claim1 = LCase(Trim(CStr(claimArr(iIdx, 1))))
     claim2 = LCase(Trim(CStr(claimArr(jIdx, 1))))
     
-    ' --- Date overlap logic: treat blank as applies-to-all (so compatible)
-    Dim dateCompatible As Boolean
-    dateCompatible = True
+    ' Date compatibility (blank = applies to all)
+    Dim dateCompatible As Boolean: dateCompatible = True
     If IsDate(eff1) And IsDate(exp1) And IsDate(eff2) And IsDate(exp2) Then
-        ' both have full ranges -> overlap check
         If Not (CDate(eff2) <= CDate(exp1) And CDate(exp2) >= CDate(eff1)) Then dateCompatible = False
-    Else
-        ' if one or both have blanks, still compatible (applies to all), so leave True
     End If
-    
     If Not dateCompatible Then Exit Function
     
-    ' --- Direct must match if both provided
+    ' Direct if both present must match
     If direct1 <> "" And direct2 <> "" Then
         If direct1 <> direct2 Then Exit Function
     End If
     
-    ' --- Dereg: "both" compatible with either Y or N
+    ' Dereg: Both compatible with Y or N
     If dereg1 <> "" And dereg2 <> "" Then
         If (dereg1 <> dereg2) And (dereg1 <> "both") And (dereg2 <> "both") Then Exit Function
     End If
     
-    ' --- Coverages, Sections, Claim must match if both provided
-    If cov1 <> "" And cov2 <> "" Then If InStr(1, cov1, cov2, vbTextCompare) = 0 And InStr(1, cov2, cov1, vbTextCompare) = 0 Then Exit Function
-    If sect1 <> "" And sect2 <> "" Then If InStr(1, sect1, sect2, vbTextCompare) = 0 And InStr(1, sect2, sect1, vbTextCompare) = 0 Then Exit Function
-    If claim1 <> "" And claim2 <> "" Then If InStr(1, claim1, claim2, vbTextCompare) = 0 And InStr(1, claim2, claim1, vbTextCompare) = 0 Then Exit Function
+    ' Cov/sect/claim if both present must overlap as substring (looser)
+    If cov1 <> "" And cov2 <> "" Then
+        If InStr(1, cov1, cov2, vbTextCompare) = 0 And InStr(1, cov2, cov1, vbTextCompare) = 0 Then Exit Function
+    End If
+    If sect1 <> "" And sect2 <> "" Then
+        If InStr(1, sect1, sect2, vbTextCompare) = 0 And InStr(1, sect2, sect1, vbTextCompare) = 0 Then Exit Function
+    End If
+    If claim1 <> "" And claim2 <> "" Then
+        If InStr(1, claim1, claim2, vbTextCompare) = 0 And InStr(1, claim2, claim1, vbTextCompare) = 0 Then Exit Function
+    End If
     
-    ' --- Issuing company and domicile: need at least one common token across comma-lists
-    If Not CommaListsIntersect(issue1, issue2) Then Exit Function
-    If Not CommaListsIntersect(dom1, dom2) Then Exit Function
+    ' Issuing company and domicile must have at least one exact token match (strict)
+    If Not CommaListsIntersect_Strict(issue1, issue2) Then Exit Function
+    If Not CommaListsIntersect_Strict(dom1, dom2) Then Exit Function
     
-    ' If all checks passed
-    RowsMatch = True
+    RowsMatch_Strict = True
 End Function
 
-' Check intersection of comma-separated lists (case-insensitive, substring tolerant)
-Function CommaListsIntersect(a As String, b As String) As Boolean
+' Strictly check intersection: exact token equality (case-insensitive)
+Function CommaListsIntersect_Strict(a As String, b As String) As Boolean
     Dim arrA() As String, arrB() As String
     If Trim(a) = "" Or Trim(b) = "" Then
-        CommaListsIntersect = False
+        CommaListsIntersect_Strict = False
         Exit Function
     End If
     arrA = Split(a, ",")
@@ -361,33 +314,34 @@ Function CommaListsIntersect(a As String, b As String) As Boolean
     Dim x As Long, y As Long
     For x = LBound(arrA) To UBound(arrA)
         For y = LBound(arrB) To UBound(arrB)
-            If Trim(arrA(x)) <> "" And Trim(arrB(y)) <> "" Then
-                If InStr(1, Trim(arrA(x)), Trim(arrB(y)), vbTextCompare) > 0 Or InStr(1, Trim(arrB(y)), Trim(arrA(x)), vbTextCompare) > 0 Then
-                    CommaListsIntersect = True
+            If LCase(Trim(arrA(x))) <> "" And LCase(Trim(arrB(y))) <> "" Then
+                If LCase(Trim(arrA(x))) = LCase(Trim(arrB(y))) Then
+                    CommaListsIntersect_Strict = True
                     Exit Function
                 End If
             End If
         Next y
     Next x
-    CommaListsIntersect = False
+    CommaListsIntersect_Strict = False
 End Function
 
-' Intersect two comma lists and return comma-separated string of common items (original casing from first arg)
-Function IntersectCommaLists(a As String, b As String) As String
+' Strict intersection that returns tokens from first argument that exactly appear in second (original casing from first)
+Function IntersectCommaLists_Strict(a As String, b As String) As String
     Dim arrA() As String, arrB() As String
     If Trim(a) = "" Or Trim(b) = "" Then
-        IntersectCommaLists = ""
+        IntersectCommaLists_Strict = ""
         Exit Function
     End If
     arrA = Split(a, ",")
-    arrB = Split(LCase(b), ",")
+    arrB = Split(b, ",")
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
-    Dim i As Long, j As Long, itemA As String, itemB As String
+    Dim i As Long, itemB As String
     For i = LBound(arrB) To UBound(arrB)
-        itemB = Trim(arrB(i))
+        itemB = LCase(Trim(arrB(i)))
         If itemB <> "" Then dict(itemB) = 1
     Next i
     Dim out As String: out = ""
+    Dim itemA As String
     For i = LBound(arrA) To UBound(arrA)
         itemA = Trim(arrA(i))
         If itemA <> "" Then
@@ -396,10 +350,5 @@ Function IntersectCommaLists(a As String, b As String) As String
             End If
         End If
     Next i
-    IntersectCommaLists = out
-End Function
-
-' Utility: read a single-column range into variant array from startRow to lastRow
-Function GetRangeArray(ws As Worksheet, colLetter As String, startRow As Long, lastRow As Long) As Variant
-    GetRangeArray = ws.Range(ws.Cells(startRow, colLetter), ws.Cells(lastRow, colLetter)).Value2
+    IntersectCommaLists_Strict = out
 End Function
