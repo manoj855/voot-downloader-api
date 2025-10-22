@@ -1,215 +1,294 @@
-Sub ProcessInsuranceData()
+Option Explicit
+
+Sub BuildTestCases_Final()
     Dim ws As Worksheet
-    Set ws = ActiveSheet ' Change to specific sheet if needed, e.g., ThisWorkbook.Sheets("Sheet1")
+    Set ws = ActiveSheet  ' Works on any sheet
     
     Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, 10).End(xlUp).Row ' Column J for last row detection
-    If lastRow < 2 Then Exit Sub
+    lastRow = ws.Cells(ws.Rows.Count, "J").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No data rows found.", vbExclamation
+        Exit Sub
+    End If
     
-    ' Constants for columns
-    Const colEff As Long = 10    ' J
-    Const colExp As Long = 11    ' K
-    Const colDirect As Long = 15 ' O
-    Const colDereg As Long = 16  ' P
-    Const colIss As Long = 17    ' Q
-    Const colDom As Long = 18    ' R
-    Const colCov As Long = 19    ' S
-    Const colSec As Long = 20    ' T
-    Const colClaim As Long = 21  ' U
-    Const colCommonDate As Long = 24 ' X
-    Const colCommonIss As Long = 25  ' Y
-    Const colCommonDom As Long = 26  ' Z
-    Const colTC As Long = 1        ' A
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
     
-    Const earlyDate As Date = #1/1/1900#
-    Const lateDate As Date = #12/31/9999#
-    
-    ' Load data into arrays
-    Dim effDates() As Date, expDates() As Date
-    Dim directs() As String, deregs() As String, iss() As String, doms() As String
-    Dim covs() As String, secs() As String, claims() As String
-    ReDim effDates(2 To lastRow), expDates(2 To lastRow)
-    ReDim directs(2 To lastRow), deregs(2 To lastRow), iss(2 To lastRow), doms(2 To lastRow)
-    ReDim covs(2 To lastRow), secs(2 To lastRow), claims(2 To lastRow)
-    
+    On Error GoTo Cleanup
+
+    ' --- Read all data ---
+    Dim n As Long: n = lastRow - 1
+    Dim effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr
+    effArr = ws.Range("J2:J" & lastRow).Value2
+    expArr = ws.Range("K2:K" & lastRow).Value2
+    directArr = ws.Range("O2:O" & lastRow).Value2
+    deregArr = ws.Range("P2:P" & lastRow).Value2
+    issueArr = ws.Range("Q2:Q" & lastRow).Value2
+    domArr = ws.Range("R2:R" & lastRow).Value2
+    covArr = ws.Range("S2:S" & lastRow).Value2
+    sectArr = ws.Range("T2:T" & lastRow).Value2
+    claimArr = ws.Range("U2:U" & lastRow).Value2
+
+    ' --- Union-Find init ---
+    Dim parent() As Long, rankArr() As Long
+    ReDim parent(1 To n)
+    ReDim rankArr(1 To n)
     Dim i As Long
-    For i = 2 To lastRow
-        effDates(i) = IIf(IsDate(ws.Cells(i, colEff).Value), ws.Cells(i, colEff).Value, earlyDate)
-        expDates(i) = IIf(IsDate(ws.Cells(i, colExp).Value), ws.Cells(i, colExp).Value, lateDate)
-        directs(i) = Trim(UCase(ws.Cells(i, colDirect).Value)) ' Normalize case and trim
-        deregs(i) = UCase(Trim(ws.Cells(i, colDereg).Value))
-        iss(i) = Trim(UCase(ws.Cells(i, colIss).Value)) ' Normalize case and trim
-        doms(i) = Trim(UCase(ws.Cells(i, colDom).Value)) ' Normalize case and trim
-        covs(i) = Trim(UCase(ws.Cells(i, colCov).Value)) ' Normalize case and trim
-        secs(i) = Trim(UCase(ws.Cells(i, colSec).Value)) ' Normalize case and trim
-        claims(i) = Trim(UCase(ws.Cells(i, colClaim).Value)) ' Normalize case and trim
-    Next i
-    
-    ' Union-Find setup
-    Dim parent() As Long
-    ReDim parent(2 To lastRow)
-    For i = 2 To lastRow
+    For i = 1 To n
         parent(i) = i
+        rankArr(i) = 0
     Next i
+
+    ' --- Pairwise comparison ---
+    Dim ii As Long, jj As Long
+    For ii = 1 To n - 1
+        For jj = ii + 1 To n
+            If RowsAreMatching(ii, jj, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr) Then
+                UFUnion parent, rankArr, ii, jj
+            End If
+        Next jj
+    Next ii
+
+    ' --- Map root to group ---
+    Dim rootDict As Object: Set rootDict = CreateObject("Scripting.Dictionary")
+    Dim root As Long, groupNum As Long: groupNum = 0
+    For i = 1 To n
+        root = UFFind(parent, i)
+        If Not rootDict.Exists(root) Then
+            groupNum = groupNum + 1
+            rootDict(root) = groupNum
+        End If
+    Next i
+
+    ' --- Collect members ---
+    Dim groups As Object: Set groups = CreateObject("Scripting.Dictionary")
+    Dim idx As Long
+    For idx = 1 To n
+        root = UFFind(parent, idx)
+        Dim g As Long: g = rootDict(root)
+        If Not groups.Exists(g) Then Set groups(g) = New Collection
+        groups(g).Add idx
+    Next idx
+
+    ' --- Create output sheets ---
+    Dim outWs As Worksheet, logWs As Worksheet
+    On Error Resume Next
+    Set outWs = ThisWorkbook.Sheets("TC_Output")
+    Set logWs = ThisWorkbook.Sheets("Merge_Log")
+    On Error GoTo 0
+    If outWs Is Nothing Then
+        Set outWs = ThisWorkbook.Sheets.Add
+        outWs.Name = "TC_Output"
+    Else
+        outWs.Cells.Clear
+    End If
+    If logWs Is Nothing Then
+        Set logWs = ThisWorkbook.Sheets.Add
+        logWs.Name = "Merge_Log"
+    Else
+        logWs.Cells.Clear
+    End If
     
-    ' Find and Union
-    For i = 2 To lastRow - 1
-        For j = i + 1 To lastRow
-            Dim compareEff As Date: compareEff = IIf(effDates(i) > effDates(j), effDates(i), effDates(j))
-            Dim minExp As Date: minExp = IIf(expDates(i) < expDates(j), expDates(i), expDates(j))
-            If compareEff <= minExp Or (effDates(i) = earlyDate Or effDates(j) = earlyDate) Then
-                If (directs(i) = directs(j) Or directs(i) = "" Or directs(j) = "") And _
-                   (covs(i) = covs(j) Or covs(i) = "" Or covs(j) = "") And _
-                   (secs(i) = secs(j) Or secs(i) = "" Or secs(j) = "") And _
-                   (claims(i) = claims(j) Or claims(i) = "" Or claims(j) = "") Then
-                    If deregs(i) = deregs(j) Or deregs(i) = "BOTH" Or deregs(j) = "BOTH" Then
-                        Dim r1 As Long: r1 = i
-                        While parent(r1) <> r1
-                            r1 = parent(r1)
-                        Wend
-                        Dim r2 As Long: r2 = j
-                        While parent(r2) <> r2
-                            r2 = parent(r2)
-                        Wend
-                        If r1 <> r2 Then parent(r1) = r2
-                    End If
+    ws.Rows(1).Copy outWs.Rows(1)
+    logWs.Range("A1:E1").Value = Array("TC_No", "Rows", "CommonDate", "CommonIssuingCompany", "CommonDomicile")
+    
+    Dim outRow As Long: outRow = 2
+    Dim TCcounter As Long: TCcounter = 1
+
+    ' --- Write groups ---
+    Dim gIdx As Variant
+    For Each gIdx In groups.Keys
+        Dim col As Collection
+        Set col = groups(gIdx)
+
+        Dim commonIss As String, commonDom As String, commonDate As String
+        commonIss = ""
+        commonDom = ""
+        commonDate = ""
+
+        ' Compute common fields
+        Dim effStart As Double, expEnd As Double
+        effStart = -1E+99
+        expEnd = 1E+99
+        Dim haveEff As Boolean, haveExp As Boolean
+        haveEff = False: haveExp = False
+
+        Dim r As Variant
+        For Each r In col
+            If IsDate(effArr(r, 1)) Then
+                If Not haveEff Then haveEff = True
+                If CDbl(CDate(effArr(r, 1))) > effStart Then effStart = CDbl(CDate(effArr(r, 1)))
+            End If
+            If IsDate(expArr(r, 1)) Then
+                If Not haveExp Then haveExp = True
+                If CDbl(CDate(expArr(r, 1))) < expEnd Then expEnd = CDbl(CDate(expArr(r, 1)))
+            End If
+            If Trim(issueArr(r, 1)) <> "" Then
+                If commonIss = "" Then
+                    commonIss = Trim(issueArr(r, 1))
+                Else
+                    commonIss = StrictIntersect(commonIss, Trim(issueArr(r, 1)))
+                End If
+            End If
+            If Trim(domArr(r, 1)) <> "" Then
+                If commonDom = "" Then
+                    commonDom = Trim(domArr(r, 1))
+                Else
+                    commonDom = StrictIntersect(commonDom, Trim(domArr(r, 1)))
+                End If
+            End If
+        Next r
+
+        ' Compute common date
+        If haveEff Then
+            If haveExp Then
+                If effStart <= expEnd Then
+                    commonDate = Format(CDate(effStart), "dd/mm/yyyy")
+                End If
+            Else
+                commonDate = Format(CDate(effStart), "dd/mm/yyyy")
+            End If
+        End If
+
+        ' --- Write rows ---
+        Dim startRow As Long: startRow = outRow
+        For Each r In col
+            ws.Rows(r + 1).Copy outWs.Rows(outRow)
+            outRow = outRow + 1
+        Next r
+        Dim endRow As Long: endRow = outRow - 1
+
+        ' --- Merge A–C and write TC info ---
+        With outWs
+            .Range(.Cells(startRow, "A"), .Cells(endRow, "A")).Merge
+            .Range(.Cells(startRow, "B"), .Cells(endRow, "B")).Merge
+            .Range(.Cells(startRow, "C"), .Cells(endRow, "C")).Merge
+            .Cells(startRow, "A").Value = "TC_" & TCcounter
+            .Cells(startRow, "X").Value = commonDate
+            .Cells(startRow, "Y").Value = commonIss
+            .Cells(startRow, "Z").Value = commonDom
+        End With
+        
+        ' --- Log ---
+        Dim allRows As String: allRows = ""
+        For Each r In col
+            allRows = allRows & (r + 1) & ","
+        Next r
+        If Right(allRows, 1) = "," Then allRows = Left(allRows, Len(allRows) - 1)
+        logWs.Cells(TCcounter + 1, 1).Value = "TC_" & TCcounter
+        logWs.Cells(TCcounter + 1, 2).Value = allRows
+        logWs.Cells(TCcounter + 1, 3).Value = commonDate
+        logWs.Cells(TCcounter + 1, 4).Value = commonIss
+        logWs.Cells(TCcounter + 1, 5).Value = commonDom
+        
+        TCcounter = TCcounter + 1
+    Next gIdx
+    
+    outWs.Columns.AutoFit
+    logWs.Columns.AutoFit
+    
+    MsgBox "✅ Done! Check 'TC_Output' and 'Merge_Log'.", vbInformation
+    
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+End Sub
+
+' ---------------------- Helper Functions ----------------------
+
+Function RowsAreMatching(ii As Long, jj As Long, effArr, expArr, directArr, deregArr, issueArr, domArr, covArr, sectArr, claimArr) As Boolean
+    RowsAreMatching = False
+    
+    Dim eff1, eff2, exp1, exp2
+    eff1 = effArr(ii, 1): eff2 = effArr(jj, 1)
+    exp1 = expArr(ii, 1): exp2 = expArr(jj, 1)
+    
+    ' Date compatibility
+    If IsDate(eff1) And IsDate(exp1) And IsDate(eff2) And IsDate(exp2) Then
+        If Not (CDate(eff2) <= CDate(exp1) And CDate(exp2) >= CDate(eff1)) Then Exit Function
+    End If
+    
+    ' Dereg logic
+    Dim d1 As String, d2 As String
+    d1 = LCase(Trim(CStr(deregArr(ii, 1))))
+    d2 = LCase(Trim(CStr(deregArr(jj, 1))))
+    If d1 <> "" And d2 <> "" Then
+        If (d1 <> d2) And (d1 <> "both") And (d2 <> "both") Then Exit Function
+    End If
+    
+    ' Direct logic
+    Dim dir1 As String, dir2 As String
+    dir1 = LCase(Trim(CStr(directArr(ii, 1))))
+    dir2 = LCase(Trim(CStr(directArr(jj, 1))))
+    If dir1 <> "" And dir2 <> "" Then
+        If dir1 <> dir2 Then Exit Function
+    End If
+    
+    ' Company & domicile match strictly
+    If Not StrictMatch(Trim(CStr(issueArr(ii, 1))), Trim(CStr(issueArr(jj, 1)))) Then Exit Function
+    If Not StrictMatch(Trim(CStr(domArr(ii, 1))), Trim(CStr(domArr(jj, 1)))) Then Exit Function
+    
+    RowsAreMatching = True
+End Function
+
+Function StrictMatch(a As String, b As String) As Boolean
+    StrictMatch = False
+    If a = "" Or b = "" Then Exit Function
+    Dim arrA() As String, arrB() As String, i As Long, j As Long
+    arrA = Split(a, ","): arrB = Split(b, ",")
+    For i = LBound(arrA) To UBound(arrA)
+        For j = LBound(arrB) To UBound(arrB)
+            If Trim(arrA(i)) <> "" And Trim(arrB(j)) <> "" Then
+                If LCase(Trim(arrA(i))) = LCase(Trim(arrB(j))) Then
+                    StrictMatch = True
+                    Exit Function
                 End If
             End If
         Next j
     Next i
-    
-    ' Path compression and collect groups
-    Dim groups As Object
-    Set groups = CreateObject("Scripting.Dictionary")
-    For i = 2 To lastRow
-        Dim root As Long: root = i
-        While parent(root) <> root
-            root = parent(root)
-        Wend
-        Dim p As Long: p = i
-        While parent(p) <> root
-            Dim nextP As Long: nextP = parent(p)
-            parent(p) = root
-            p = nextP
-        Wend
-        If Not groups.Exists(root) Then
-            Set groups(root) = New Collection
-        End If
-        groups(root).Add i
+End Function
+
+Function StrictIntersect(a As String, b As String) As String
+    Dim arrA() As String, arrB() As String, dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+    Dim i As Long, token As String, result As String: result = ""
+    If a = "" Or b = "" Then Exit Function
+    arrB = Split(b, ",")
+    For i = LBound(arrB) To UBound(arrB)
+        token = LCase(Trim(arrB(i)))
+        If token <> "" Then dict(token) = 1
     Next i
-    
-    ' Convert to collection of groups
-    Dim groupList As New Collection
-    For Each key In groups.Keys
-        groupList.Add groups(key)
-    Next key
-    
-    ' Sort groups by min row number
-    Dim swapped As Boolean
-    Do
-        swapped = False
-        For i = 1 To groupList.Count - 1
-            Dim g1 As Collection: Set g1 = groupList(i)
-            Dim g2 As Collection: Set g2 = groupList(i + 1)
-            Dim min1 As Long: min1 = g1(1)
-            Dim min2 As Long: min2 = g2(1)
-            If min1 > min2 Then
-                Dim temp As Collection
-                Set temp = groupList(i)
-                Set groupList(i) = groupList(i + 1)
-                Set groupList(i + 1) = temp
-                swapped = True
+    arrA = Split(a, ",")
+    For i = LBound(arrA) To UBound(arrA)
+        token = Trim(arrA(i))
+        If token <> "" Then
+            If dict.Exists(LCase(token)) Then
+                If result = "" Then result = token Else result = result & ", " & token
             End If
-        Next i
-    Loop While swapped
-    
-    ' Sort within each group by row number
-    For Each g In groupList
-        Do
-            swapped = False
-            For i = 1 To g.Count - 1
-                If g(i) > g(i + 1) Then
-                    Dim tmp As Long: tmp = g(i)
-                    g(i) = g(i + 1)
-                    g(i + 1) = tmp
-                    swapped = True
-                End If
-            Next i
-        Loop While swapped
-    Next g
-    
-    ' Prepare new data array (copy entire rows)
-    Dim maxCol As Long: maxCol = ws.UsedRange.Columns.Count
-    Dim newData() As Variant
-    ReDim newData(1 To lastRow - 1, 1 To maxCol)
-    
-    Dim newIdx As Long: newIdx = 1
-    For Each g In groupList
-        For Each oldRow In g
-            Dim c As Long
-            For c = 1 To maxCol
-                newData(newIdx, c) = ws.Cells(oldRow, c).Value
-            Next c
-            newIdx = newIdx + 1
-        Next oldRow
-    Next g
-    
-    ' Clear old data
-    ws.Rows("2:" & lastRow).ClearContents
-    
-    ' Paste new data
-    ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, maxCol)).Value = newData
-    
-    ' Process groups for commons, TC, and merging
-    Application.DisplayAlerts = False
-    Dim currRow As Long: currRow = 2
-    For Each g In groupList
-        Dim gSize As Long: gSize = g.Count
-        Dim maxEff As Date: maxEff = earlyDate
-        Dim hasEff As Boolean: hasEff = False
-        For Each oldRow In g
-            If effDates(oldRow) <> earlyDate Then
-                If effDates(oldRow) > maxEff Then maxEff = effDates(oldRow)
-                hasEff = True
-            End If
-        Next oldRow
-        Dim commonDate As Variant
-        If Not hasEff Then
-            commonDate = ""
-        Else
-            commonDate = maxEff
         End If
-        
-        Dim issDict As Object: Set issDict = CreateObject("Scripting.Dictionary")
-        For Each oldRow In g
-            If iss(oldRow) <> "" Then issDict(iss(oldRow)) = 1
-        Next oldRow
-        Dim commonIss As String: commonIss = Join(issDict.Keys, ",")
-        
-        Dim domDict As Object: Set domDict = CreateObject("Scripting.Dictionary")
-        For Each oldRow In g
-            If doms(oldRow) <> "" Then domDict(doms(oldRow)) = 1
-        Next oldRow
-        Dim commonDom As String: commonDom = Join(domDict.Keys, ",")
-        
-        Dim groupStart As Long: groupStart = currRow
-        Dim groupEnd As Long: groupEnd = currRow + gSize - 1
-        Dim n As Long: n = 1
-        For i = groupStart To groupEnd
-            ws.Cells(i, colTC).Value = "TC_" & n
-            ws.Cells(i, colCommonDate).Value = commonDate
-            ws.Cells(i, colCommonIss).Value = commonIss
-            ws.Cells(i, colCommonDom).Value = commonDom
-            n = n + 1
-        Next i
-        
-        If gSize > 1 Then
-            ws.Range(ws.Cells(groupStart, colCommonDate), ws.Cells(groupEnd, colCommonDate)).Merge
-            ws.Range(ws.Cells(groupStart, colCommonIss), ws.Cells(groupEnd, colCommonIss)).Merge
-            ws.Range(ws.Cells(groupStart, colCommonDom), ws.Cells(groupEnd, colCommonDom)).Merge
-        End If
-        
-        currRow = currRow + gSize
-    Next g
-    Application.DisplayAlerts = True
+    Next i
+    StrictIntersect = result
+End Function
+
+' --- Union-Find ---
+Function UFFind(parent() As Long, x As Long) As Long
+    If parent(x) <> x Then parent(x) = UFFind(parent, parent(x))
+    UFFind = parent(x)
+End Function
+
+Sub UFUnion(parent() As Long, rankArr() As Long, x As Long, y As Long)
+    Dim rx As Long, ry As Long
+    rx = UFFind(parent, x)
+    ry = UFFind(parent, y)
+    If rx = ry Then Exit Sub
+    If rankArr(rx) < rankArr(ry) Then
+        parent(rx) = ry
+    ElseIf rankArr(rx) > rankArr(ry) Then
+        parent(ry) = rx
+    Else
+        parent(ry) = rx
+        rankArr(rx) = rankArr(rx) + 1
+    End If
 End Sub
